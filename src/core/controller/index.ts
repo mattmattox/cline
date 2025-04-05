@@ -44,6 +44,8 @@ import {
 } from "../storage/state"
 import { WebviewProvider } from "../webview"
 import { GlobalFileNames } from "../storage/disk"
+import { searchWorkspaceFiles } from "../../services/search/file-search"
+import { getWorkspacePath } from "../../utils/path"
 
 /*
 https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -107,6 +109,7 @@ export class Controller {
 	async handleSignOut() {
 		try {
 			await storeSecret(this.context, "clineApiKey", undefined)
+			await updateGlobalState(this.context, "userInfo", undefined)
 			await updateGlobalState(this.context, "apiProvider", "openrouter")
 			await this.postStateToWebview()
 			vscode.window.showInformationMessage("Successfully logged out of Cline")
@@ -165,6 +168,28 @@ export class Controller {
 	 */
 	async handleWebviewMessage(message: WebviewMessage) {
 		switch (message.type) {
+			case "addRemoteServer": {
+				try {
+					await this.mcpHub?.addRemoteServer(message.serverName!, message.serverUrl!)
+					await this.postMessageToWebview({
+						type: "addRemoteServerResult",
+						addRemoteServerResult: {
+							success: true,
+							serverName: message.serverName!,
+						},
+					})
+				} catch (error) {
+					await this.postMessageToWebview({
+						type: "addRemoteServerResult",
+						addRemoteServerResult: {
+							success: false,
+							serverName: message.serverName!,
+							error: error.message,
+						},
+					})
+				}
+				break
+			}
 			case "authStateChanged":
 				await this.setUserInfo(message.user || undefined)
 				await this.postStateToWebview()
@@ -636,6 +661,49 @@ export class Controller {
 				await this.postStateToWebview()
 				this.refreshTotalTasksSize()
 				this.postMessageToWebview({ type: "relinquishControl" })
+				break
+			}
+			case "searchFiles": {
+				const workspacePath = getWorkspacePath()
+
+				if (!workspacePath) {
+					// Handle case where workspace path is not available
+					await this.postMessageToWebview({
+						type: "fileSearchResults",
+						results: [],
+						mentionsRequestId: message.mentionsRequestId,
+						error: "No workspace path available",
+					})
+					break
+				}
+				try {
+					// Call file search service with query from message
+					const results = await searchWorkspaceFiles(
+						message.query || "",
+						workspacePath,
+						20, // Use default limit, as filtering is now done in the backend
+					)
+
+					// debug logging to be removed
+					//console.log(`controller/index.ts: Search results: ${results.length}`)
+
+					// Send results back to webview
+					await this.postMessageToWebview({
+						type: "fileSearchResults",
+						results,
+						mentionsRequestId: message.mentionsRequestId,
+					})
+				} catch (error) {
+					const errorMessage = error instanceof Error ? error.message : String(error)
+
+					// Send error response to webview
+					await this.postMessageToWebview({
+						type: "fileSearchResults",
+						results: [],
+						error: errorMessage,
+						mentionsRequestId: message.mentionsRequestId,
+					})
+				}
 				break
 			}
 			// Add more switch case statements here as more webview message commands
